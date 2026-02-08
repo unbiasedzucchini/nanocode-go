@@ -36,20 +36,28 @@ var (
 
 func init() {
 	// Load .env from home directory
-	if home, err := os.UserHomeDir(); err == nil {
-		if data, err := os.ReadFile(filepath.Join(home, ".env")); err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				if k, v, ok := strings.Cut(line, "="); ok {
-					v = strings.Trim(strings.TrimSpace(v), `"`)
-					if os.Getenv(strings.TrimSpace(k)) == "" {
-						os.Setenv(strings.TrimSpace(k), v)
-					}
-				}
-			}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	
+	data, err := os.ReadFile(filepath.Join(home, ".env"))
+	if err != nil {
+		return
+	}
+	
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		v = strings.Trim(strings.TrimSpace(v), `"`)
+		if os.Getenv(strings.TrimSpace(k)) == "" {
+			os.Setenv(strings.TrimSpace(k), v)
 		}
 	}
 
@@ -57,10 +65,11 @@ func init() {
 	if openrouterKey != "" {
 		apiURL = "https://openrouter.ai/api/v1/messages"
 		model = envOr("MODEL", "anthropic/claude-sonnet-4")
-	} else {
-		apiURL = "https://api.anthropic.com/v1/messages"
-		model = envOr("MODEL", "claude-sonnet-4")
+		return
 	}
+	
+	apiURL = "https://api.anthropic.com/v1/messages"
+	model = envOr("MODEL", "claude-sonnet-4")
 }
 
 func envOr(key, fallback string) string {
@@ -78,20 +87,25 @@ func toolRead(args map[string]any) string {
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
+	
 	lines := strings.SplitAfter(string(data), "\n")
 	// Remove trailing empty element from split
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
+	
 	offset := intArg(args, "offset", 0)
 	limit := intArg(args, "limit", len(lines))
+	
 	if offset > len(lines) {
 		offset = len(lines)
 	}
+	
 	end := offset + limit
 	if end > len(lines) {
 		end = len(lines)
 	}
+	
 	var buf strings.Builder
 	for i, line := range lines[offset:end] {
 		fmt.Fprintf(&buf, "%4d| %s", offset+i+1, line)
@@ -117,23 +131,29 @@ func toolEdit(args map[string]any) string {
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
+	
 	text := string(data)
 	old, _ := args["old"].(string)
 	new_, _ := args["new"].(string)
+	
 	if !strings.Contains(text, old) {
 		return "error: old_string not found"
 	}
+	
 	count := strings.Count(text, old)
 	all, _ := args["all"].(bool)
+	
 	if !all && count > 1 {
 		return fmt.Sprintf("error: old_string appears %d times, must be unique (use all=true)", count)
 	}
+	
 	var result string
 	if all {
 		result = strings.ReplaceAll(text, old, new_)
 	} else {
 		result = strings.Replace(text, old, new_, 1)
 	}
+	
 	if err := os.WriteFile(path, []byte(result), 0o644); err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
@@ -145,6 +165,7 @@ func toolGlob(args map[string]any) string {
 	pat, _ := args["pat"].(string)
 	fullPattern := filepath.Join(base, pat)
 	matches, _ := filepath.Glob(fullPattern)
+	
 	// Sort by mtime descending
 	sort.Slice(matches, func(i, j int) bool {
 		fi, _ := os.Stat(matches[i])
@@ -158,6 +179,7 @@ func toolGlob(args map[string]any) string {
 		}
 		return ti.After(tj)
 	})
+	
 	if len(matches) == 0 {
 		return "none"
 	}
@@ -170,30 +192,37 @@ func toolGrep(args map[string]any) string {
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
+	
 	base := stringArg(args, "path", ".")
 	var hits []string
+	
 	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
+		
 		f, err := os.Open(path)
 		if err != nil {
 			return nil
 		}
 		defer f.Close()
+		
 		scanner := bufio.NewScanner(f)
 		lineNum := 0
 		for scanner.Scan() {
 			lineNum++
-			if re.MatchString(scanner.Text()) {
-				hits = append(hits, fmt.Sprintf("%s:%d:%s", path, lineNum, scanner.Text()))
-				if len(hits) >= 50 {
-					return fs.SkipAll
-				}
+			if !re.MatchString(scanner.Text()) {
+				continue
+			}
+			
+			hits = append(hits, fmt.Sprintf("%s:%d:%s", path, lineNum, scanner.Text()))
+			if len(hits) >= 50 {
+				return fs.SkipAll
 			}
 		}
 		return nil
 	})
+	
 	if len(hits) == 0 {
 		return "none"
 	}
@@ -380,115 +409,146 @@ func renderMarkdown(text string) string {
 
 // --- Main ---
 
+func processUserInput(scanner *bufio.Scanner, messages *[]any) (string, bool) {
+	fmt.Println(separator())
+	fmt.Printf("%s%s❯%s ", BOLD, BLUE, RESET)
+	
+	if !scanner.Scan() {
+		return "", false
+	}
+	
+	input := strings.TrimSpace(scanner.Text())
+	fmt.Println(separator())
+	
+	if input == "" {
+		return "", true
+	}
+	
+	if input == "/q" || input == "exit" {
+		return "", false
+	}
+	
+	if input == "/c" {
+		*messages = nil
+		fmt.Printf("%s⏺ Cleared conversation%s\n", GREEN, RESET)
+		return "", true
+	}
+	
+	*messages = append(*messages, map[string]any{
+		"role":    "user",
+		"content": input,
+	})
+	
+	return input, true
+}
+
+func processContentBlock(block map[string]any, toolResults *[]any) {
+	blockType, _ := block["type"].(string)
+	
+	if blockType == "text" {
+		text, _ := block["text"].(string)
+		fmt.Printf("\n%s⏺%s %s\n", CYAN, RESET, renderMarkdown(text))
+		return
+	}
+	
+	if blockType != "tool_use" {
+		return
+	}
+	
+	toolName, _ := block["name"].(string)
+	toolArgs, _ := block["input"].(map[string]any)
+	toolID, _ := block["id"].(string)
+	
+	// Preview: first arg value, truncated
+	argPreview := ""
+	for _, v := range toolArgs {
+		s := fmt.Sprintf("%v", v)
+		if len(s) > 50 {
+			s = s[:50]
+		}
+		argPreview = s
+		break
+	}
+	fmt.Printf("\n%s⏺ %s%s(%s%s%s)\n", GREEN, strings.Title(toolName), RESET, DIM, argPreview, RESET)
+	
+	result := runTool(toolName, toolArgs)
+	lines := strings.SplitN(result, "\n", 2)
+	preview := lines[0]
+	
+	if len(preview) > 60 {
+		preview = preview[:60] + "..."
+	} else if len(lines) > 1 {
+		allLines := strings.Count(result, "\n")
+		preview += fmt.Sprintf(" ... +%d lines", allLines)
+	}
+	fmt.Printf("  %s⎿  %s%s\n", DIM, preview, RESET)
+	
+	*toolResults = append(*toolResults, map[string]any{
+		"type":        "tool_result",
+		"tool_use_id": toolID,
+		"content":     result,
+	})
+}
+
+func runAgenticLoop(messages *[]any, systemPrompt string) {
+	for {
+		response, err := callAPI(*messages, systemPrompt)
+		if err != nil {
+			fmt.Printf("%s⏺ Error: %v%s\n", RED, err, RESET)
+			break
+		}
+		
+		contentBlocks, _ := response["content"].([]any)
+		var toolResults []any
+		
+		for _, raw := range contentBlocks {
+			block, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			processContentBlock(block, &toolResults)
+		}
+		
+		*messages = append(*messages, map[string]any{
+			"role":    "assistant",
+			"content": contentBlocks,
+		})
+		
+		if len(toolResults) == 0 {
+			break
+		}
+		
+		*messages = append(*messages, map[string]any{
+			"role":    "user",
+			"content": toolResults,
+		})
+	}
+}
+
 func main() {
 	provider := "Anthropic"
 	if openrouterKey != "" {
 		provider = "OpenRouter"
 	}
+	
 	cwd, _ := os.Getwd()
 	fmt.Printf("%snanocode%s | %s%s (%s) | %s%s\n\n", BOLD, RESET, DIM, model, provider, cwd, RESET)
-
+	
 	var messages []any
 	systemPrompt := fmt.Sprintf("Concise coding assistant. cwd: %s", cwd)
 	scanner := bufio.NewScanner(os.Stdin)
-
+	
 	for {
-		fmt.Println(separator())
-		fmt.Printf("%s%s❯%s ", BOLD, BLUE, RESET)
-		if !scanner.Scan() {
+		input, shouldContinue := processUserInput(scanner, &messages)
+		if !shouldContinue {
 			break
 		}
-		input := strings.TrimSpace(scanner.Text())
-		fmt.Println(separator())
+		
 		if input == "" {
 			continue
 		}
-		if input == "/q" || input == "exit" {
-			break
-		}
-		if input == "/c" {
-			messages = nil
-			fmt.Printf("%s⏺ Cleared conversation%s\n", GREEN, RESET)
-			continue
-		}
-
-		messages = append(messages, map[string]any{
-			"role":    "user",
-			"content": input,
-		})
-
-		// Agentic loop
-		for {
-			response, err := callAPI(messages, systemPrompt)
-			if err != nil {
-				fmt.Printf("%s⏺ Error: %v%s\n", RED, err, RESET)
-				break
-			}
-
-			contentBlocks, _ := response["content"].([]any)
-			var toolResults []any
-
-			for _, raw := range contentBlocks {
-				block, ok := raw.(map[string]any)
-				if !ok {
-					continue
-				}
-				blockType, _ := block["type"].(string)
-
-				if blockType == "text" {
-					text, _ := block["text"].(string)
-					fmt.Printf("\n%s⏺%s %s\n", CYAN, RESET, renderMarkdown(text))
-				}
-
-				if blockType == "tool_use" {
-					toolName, _ := block["name"].(string)
-					toolArgs, _ := block["input"].(map[string]any)
-					toolID, _ := block["id"].(string)
-
-					// Preview: first arg value, truncated
-					argPreview := ""
-					for _, v := range toolArgs {
-						s := fmt.Sprintf("%v", v)
-						if len(s) > 50 {
-							s = s[:50]
-						}
-						argPreview = s
-						break
-					}
-					fmt.Printf("\n%s⏺ %s%s(%s%s%s)\n", GREEN, strings.Title(toolName), RESET, DIM, argPreview, RESET)
-
-					result := runTool(toolName, toolArgs)
-					lines := strings.SplitN(result, "\n", 2)
-					preview := lines[0]
-					if len(preview) > 60 {
-						preview = preview[:60] + "..."
-					} else if len(lines) > 1 {
-						allLines := strings.Count(result, "\n")
-						preview += fmt.Sprintf(" ... +%d lines", allLines)
-					}
-					fmt.Printf("  %s⎿  %s%s\n", DIM, preview, RESET)
-
-					toolResults = append(toolResults, map[string]any{
-						"type":        "tool_result",
-						"tool_use_id": toolID,
-						"content":     result,
-					})
-				}
-			}
-
-			messages = append(messages, map[string]any{
-				"role":    "assistant",
-				"content": contentBlocks,
-			})
-
-			if len(toolResults) == 0 {
-				break
-			}
-			messages = append(messages, map[string]any{
-				"role":    "user",
-				"content": toolResults,
-			})
-		}
+		
+		runAgenticLoop(&messages, systemPrompt)
 		fmt.Println()
 	}
 }
