@@ -397,17 +397,23 @@ func renderMarkdown(text string) string {
 func main() {
 	loadEnvFile()
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot get working directory: %v\n", err)
+		os.Exit(1)
+	}
+
 	cfg := config{
 		APIKey:       os.Getenv("OPENROUTER_API_KEY"),
 		Model:        envOr("MODEL", "anthropic/claude-sonnet-4"),
-		SystemPrompt: fmt.Sprintf("Concise coding assistant. cwd: %s", must(os.Getwd())),
+		SystemPrompt: fmt.Sprintf("Concise coding assistant. cwd: %s", cwd),
 	}
 	if cfg.APIKey == "" {
 		fmt.Fprintf(os.Stderr, "OPENROUTER_API_KEY not set\n")
 		os.Exit(1)
 	}
 
-	fmt.Printf("%snanocode%s | %s%s | %s%s\n\n", BOLD, RESET, DIM, cfg.Model, must(os.Getwd()), RESET)
+	fmt.Printf("%snanocode%s | %s%s | %s%s\n\n", BOLD, RESET, DIM, cfg.Model, cwd, RESET)
 
 	var messages []message
 	scanner := bufio.NewScanner(os.Stdin)
@@ -494,4 +500,3 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-func must(s string, _ error) string { return s }
