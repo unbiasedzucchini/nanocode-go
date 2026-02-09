@@ -28,14 +28,14 @@ const (
 	RED   = "\033[31m"
 )
 
+const apiURL = "https://openrouter.ai/api/v1/messages"
+
 // --- API types ---
 
 type config struct {
-	APIURL        string
-	APIKey        string
-	Model         string
-	IsOpenRouter  bool
-	SystemPrompt  string
+	APIKey       string
+	Model        string
+	SystemPrompt string
 }
 
 type apiRequest struct {
@@ -354,17 +354,13 @@ func callAPI(cfg config, messages []message) (apiResponse, error) {
 	if err != nil {
 		return apiResponse{}, err
 	}
-	httpReq, err := http.NewRequest("POST", cfg.APIURL, bytes.NewReader(data))
+	httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(data))
 	if err != nil {
 		return apiResponse{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	if cfg.IsOpenRouter {
-		httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	} else {
-		httpReq.Header.Set("x-api-key", cfg.APIKey)
-	}
+	httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		return apiResponse{}, err
@@ -401,23 +397,17 @@ func renderMarkdown(text string) string {
 func main() {
 	loadEnvFile()
 
-	cfg := config{SystemPrompt: fmt.Sprintf("Concise coding assistant. cwd: %s", must(os.Getwd()))}
-	if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
-		cfg.APIURL = "https://openrouter.ai/api/v1/messages"
-		cfg.APIKey = key
-		cfg.Model = envOr("MODEL", "anthropic/claude-sonnet-4")
-		cfg.IsOpenRouter = true
-	} else {
-		cfg.APIURL = "https://api.anthropic.com/v1/messages"
-		cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
-		cfg.Model = envOr("MODEL", "claude-sonnet-4")
+	cfg := config{
+		APIKey:       os.Getenv("OPENROUTER_API_KEY"),
+		Model:        envOr("MODEL", "anthropic/claude-sonnet-4"),
+		SystemPrompt: fmt.Sprintf("Concise coding assistant. cwd: %s", must(os.Getwd())),
+	}
+	if cfg.APIKey == "" {
+		fmt.Fprintf(os.Stderr, "OPENROUTER_API_KEY not set\n")
+		os.Exit(1)
 	}
 
-	provider := "Anthropic"
-	if cfg.IsOpenRouter {
-		provider = "OpenRouter"
-	}
-	fmt.Printf("%snanocode%s | %s%s (%s) | %s%s\n\n", BOLD, RESET, DIM, cfg.Model, provider, must(os.Getwd()), RESET)
+	fmt.Printf("%snanocode%s | %s%s | %s%s\n\n", BOLD, RESET, DIM, cfg.Model, must(os.Getwd()), RESET)
 
 	var messages []message
 	scanner := bufio.NewScanner(os.Stdin)

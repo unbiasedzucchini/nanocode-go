@@ -19,11 +19,6 @@ Ported from nanocode commit [`b009d3d`](https://github.com/1rgs/nanocode/commit/
 ```bash
 go build -o nanocode .
 
-# With Anthropic directly:
-export ANTHROPIC_API_KEY="your-key"
-./nanocode
-
-# With OpenRouter:
 export OPENROUTER_API_KEY="your-key"
 ./nanocode
 
