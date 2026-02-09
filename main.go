@@ -52,11 +52,11 @@ type message struct {
 }
 
 type contentBlock struct {
-	Type  string         `json:"type"`
-	Text  string         `json:"text,omitempty"`
-	ID    string         `json:"id,omitempty"`
-	Name  string         `json:"name,omitempty"`
-	Input map[string]any `json:"input,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type toolResult struct {
@@ -89,34 +89,44 @@ type propertySchema struct {
 
 type toolDef struct {
 	Schema toolSchema
-	Fn     func(map[string]any) string
+	Run    func(json.RawMessage) string
+}
+
+func typed[T any](fn func(T) string) func(json.RawMessage) string {
+	return func(raw json.RawMessage) string {
+		var args T
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Sprintf("error: %v", err)
+		}
+		return fn(args)
+	}
 }
 
 var tools = []toolDef{
 	{toolSchema{"read", "Read file with line numbers (file path, not directory)", inputSchema{"object",
 		map[string]propertySchema{"path": {"string"}, "offset": {"integer"}, "limit": {"integer"}},
-		[]string{"path"}}}, toolRead},
+		[]string{"path"}}}, typed(toolRead)},
 	{toolSchema{"write", "Write content to file", inputSchema{"object",
 		map[string]propertySchema{"path": {"string"}, "content": {"string"}},
-		[]string{"path", "content"}}}, toolWrite},
+		[]string{"path", "content"}}}, typed(toolWrite)},
 	{toolSchema{"edit", "Replace old with new in file (old must be unique unless all=true)", inputSchema{"object",
 		map[string]propertySchema{"path": {"string"}, "old": {"string"}, "new": {"string"}, "all": {"boolean"}},
-		[]string{"path", "old", "new"}}}, toolEdit},
+		[]string{"path", "old", "new"}}}, typed(toolEdit)},
 	{toolSchema{"glob", "Find files by pattern, sorted by mtime", inputSchema{"object",
 		map[string]propertySchema{"pat": {"string"}, "path": {"string"}},
-		[]string{"pat"}}}, toolGlob},
+		[]string{"pat"}}}, typed(toolGlob)},
 	{toolSchema{"grep", "Search files for regex pattern", inputSchema{"object",
 		map[string]propertySchema{"pat": {"string"}, "path": {"string"}},
-		[]string{"pat"}}}, toolGrep},
+		[]string{"pat"}}}, typed(toolGrep)},
 	{toolSchema{"bash", "Run shell command", inputSchema{"object",
 		map[string]propertySchema{"cmd": {"string"}},
-		[]string{"cmd"}}}, toolBash},
+		[]string{"cmd"}}}, typed(toolBash)},
 }
 
-func runTool(name string, args map[string]any) string {
+func runTool(name string, input json.RawMessage) string {
 	for _, t := range tools {
 		if t.Schema.Name == name {
-			return t.Fn(args)
+			return t.Run(input)
 		}
 	}
 	return fmt.Sprintf("error: unknown tool %s", name)
@@ -130,11 +140,44 @@ func toolSchemas() []toolSchema {
 	return s
 }
 
+// --- Tool arg types ---
+
+type readArgs struct {
+	Path   string `json:"path"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+type writeArgs struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type editArgs struct {
+	Path string `json:"path"`
+	Old  string `json:"old"`
+	New  string `json:"new"`
+	All  bool   `json:"all"`
+}
+
+type globArgs struct {
+	Pat  string `json:"pat"`
+	Path string `json:"path"`
+}
+
+type grepArgs struct {
+	Pat  string `json:"pat"`
+	Path string `json:"path"`
+}
+
+type bashArgs struct {
+	Cmd string `json:"cmd"`
+}
+
 // --- Tool implementations ---
 
-func toolRead(args map[string]any) string {
-	path, _ := args["path"].(string)
-	data, err := os.ReadFile(path)
+func toolRead(args readArgs) string {
+	data, err := os.ReadFile(args.Path)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
@@ -142,8 +185,11 @@ func toolRead(args map[string]any) string {
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	offset := intArg(args, "offset", 0)
-	limit := intArg(args, "limit", len(lines))
+	offset := args.Offset
+	limit := args.Limit
+	if limit == 0 {
+		limit = len(lines)
+	}
 	if offset > len(lines) {
 		offset = len(lines)
 	}
@@ -158,51 +204,47 @@ func toolRead(args map[string]any) string {
 	return buf.String()
 }
 
-func toolWrite(args map[string]any) string {
-	path, _ := args["path"].(string)
-	content, _ := args["content"].(string)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+func toolWrite(args writeArgs) string {
+	if err := os.MkdirAll(filepath.Dir(args.Path), 0o755); err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(args.Path, []byte(args.Content), 0o644); err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
 	return "ok"
 }
 
-func toolEdit(args map[string]any) string {
-	path, _ := args["path"].(string)
-	data, err := os.ReadFile(path)
+func toolEdit(args editArgs) string {
+	data, err := os.ReadFile(args.Path)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
 	text := string(data)
-	old, _ := args["old"].(string)
-	new_, _ := args["new"].(string)
-	if !strings.Contains(text, old) {
+	if !strings.Contains(text, args.Old) {
 		return "error: old_string not found"
 	}
-	count := strings.Count(text, old)
-	all, _ := args["all"].(bool)
-	if !all && count > 1 {
+	count := strings.Count(text, args.Old)
+	if !args.All && count > 1 {
 		return fmt.Sprintf("error: old_string appears %d times, must be unique (use all=true)", count)
 	}
 	var result string
-	if all {
-		result = strings.ReplaceAll(text, old, new_)
+	if args.All {
+		result = strings.ReplaceAll(text, args.Old, args.New)
 	} else {
-		result = strings.Replace(text, old, new_, 1)
+		result = strings.Replace(text, args.Old, args.New, 1)
 	}
-	if err := os.WriteFile(path, []byte(result), 0o644); err != nil {
+	if err := os.WriteFile(args.Path, []byte(result), 0o644); err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
 	return "ok"
 }
 
-func toolGlob(args map[string]any) string {
-	base := stringArg(args, "path", ".")
-	pat, _ := args["pat"].(string)
-	matches, _ := filepath.Glob(filepath.Join(base, pat))
+func toolGlob(args globArgs) string {
+	base := args.Path
+	if base == "" {
+		base = "."
+	}
+	matches, _ := filepath.Glob(filepath.Join(base, args.Pat))
 	sort.Slice(matches, func(i, j int) bool {
 		fi, _ := os.Stat(matches[i])
 		fj, _ := os.Stat(matches[j])
@@ -221,13 +263,15 @@ func toolGlob(args map[string]any) string {
 	return strings.Join(matches, "\n")
 }
 
-func toolGrep(args map[string]any) string {
-	patStr, _ := args["pat"].(string)
-	re, err := regexp.Compile(patStr)
+func toolGrep(args grepArgs) string {
+	re, err := regexp.Compile(args.Pat)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
-	base := stringArg(args, "path", ".")
+	base := args.Path
+	if base == "" {
+		base = "."
+	}
 	var hits []string
 	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -257,9 +301,8 @@ func toolGrep(args map[string]any) string {
 	return strings.Join(hits, "\n")
 }
 
-func toolBash(args map[string]any) string {
-	cmdStr, _ := args["cmd"].(string)
-	cmd := exec.Command("bash", "-c", cmdStr)
+func toolBash(args bashArgs) string {
+	cmd := exec.Command("bash", "-c", args.Cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)
@@ -292,22 +335,6 @@ func toolBash(args map[string]any) string {
 }
 
 // --- Helpers ---
-
-func intArg(args map[string]any, key string, def int) int {
-	if v, ok := args[key]; ok {
-		if n, ok := v.(float64); ok {
-			return int(n)
-		}
-	}
-	return def
-}
-
-func stringArg(args map[string]any, key, def string) string {
-	if v, ok := args[key].(string); ok && v != "" {
-		return v
-	}
-	return def
-}
 
 func loadEnvFile() {
 	home, err := os.UserHomeDir()
@@ -453,15 +480,10 @@ func main() {
 				switch block.Type {
 				case "text":
 					fmt.Printf("\n%s⏺%s %s\n", CYAN, RESET, renderMarkdown(block.Text))
-				case "tool_use":
-					argPreview := ""
-					for _, v := range block.Input {
-						s := fmt.Sprintf("%v", v)
-						if len(s) > 50 {
-							s = s[:50]
-						}
-						argPreview = s
-						break
+					case "tool_use":
+					argPreview := string(block.Input)
+					if len(argPreview) > 50 {
+						argPreview = argPreview[:50]
 					}
 					fmt.Printf("\n%s⏺ %s%s(%s%s%s)\n", GREEN, capitalize(block.Name), RESET, DIM, argPreview, RESET)
 
